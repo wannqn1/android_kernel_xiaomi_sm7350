@@ -104,6 +104,7 @@ qcom-vadc-common.ko
 qti-glink-adc.ko
 qcom-spmi-adc5.ko
 pm8941-pwrkey.ko
+qti-battery-charger.ko
 qcom-hv-haptics.ko
 cap1296.ko
 msm_show_resume_irq.ko
@@ -114,7 +115,9 @@ leds-qpnp-vibrator-ldo.ko
 qcom-i2c-pmic.ko
 qcom-pm8008.ko
 r8169.ko
+crc-itu-t.ko
 aquantia.ko
+qcom-phy-lib.ko
 qca808x.ko
 realtek.ko
 pinctrl-spmi-gpio.ko
@@ -223,6 +226,7 @@ tipc_diag.ko
 rfkill.ko
 cfg80211.ko
 bluetooth.ko
+pwrseq-core.ko
 hci_uart.ko
 rust_binder.ko
 btqca.ko
