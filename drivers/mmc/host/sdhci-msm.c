@@ -211,6 +211,8 @@
 	msm_host->var_ops->msm_writel_relaxed(val, host, offset)
 
 /* CQHCI vendor specific registers */
+#define CQE_V5_VENDOR_CFG		0x900
+#define CMDQ_SEND_STATUS_TRIGGER	BIT(31)
 #define CQHCI_VENDOR_CFG1	0xA00
 #define CQHCI_VENDOR_DIS_RST_ON_CQ_EN	(0x3 << 13)
 #define RCLK_TOGGLE BIT(1)
@@ -5541,7 +5543,6 @@ bus_clk_deinit:
 	if (!IS_ERR(msm_host->bus_clk))
 		clk_disable_unprepare(msm_host->bus_clk);
 pltfm_free:
-	sdhci_pltfm_free(pdev);
 	return ret;
 }
 
@@ -5607,7 +5608,6 @@ skip_removing_qos:
 		sdhci_msm_bus_get_and_set_vote(host, 0);
 		sdhci_msm_bus_unregister(&pdev->dev, msm_host);
 	}
-	sdhci_pltfm_free(pdev);
 }
 
 void sdhci_msm_toggle_dat1_gpio(struct sdio_func *func)
@@ -5778,7 +5778,7 @@ static const struct dev_pm_ops sdhci_msm_pm_ops = {
 
 static struct platform_driver sdhci_msm_driver = {
 	.probe = sdhci_msm_probe,
-	.remove_new = sdhci_msm_remove,
+	.remove = sdhci_msm_remove,
 	.driver = {
 		   .name = "sdhci_msm",
 		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,

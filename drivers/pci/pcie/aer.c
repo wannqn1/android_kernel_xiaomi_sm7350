@@ -42,8 +42,6 @@
 
 #define AER_ERROR_SOURCES_MAX		128
 
-#define AER_MAX_TYPEOF_COR_ERRS		16	/* as per PCI_ERR_COR_STATUS */
-#define AER_MAX_TYPEOF_UNCOR_ERRS	32	/* as per PCI_ERR_UNCOR_STATUS*/
 
 struct aer_err_source {
 	u32 status;			/* PCI_ERR_ROOT_STATUS */
@@ -55,45 +53,6 @@ struct aer_rpc {
 	DECLARE_KFIFO(aer_fifo, struct aer_err_source, AER_ERROR_SOURCES_MAX);
 };
 
-/* AER info for the device */
-struct aer_info {
-
-	/*
-	 * Fields for all AER capable devices. They indicate the errors
-	 * "as seen by this device". Note that this may mean that if an
-	 * Endpoint is causing problems, the AER counters may increment
-	 * at its link partner (e.g. Root Port) because the errors will be
-	 * "seen" by the link partner and not the problematic Endpoint
-	 * itself (which may report all counters as 0 as it never saw any
-	 * problems).
-	 */
-	/* Counters for different type of correctable errors */
-	u64 dev_cor_errs[AER_MAX_TYPEOF_COR_ERRS];
-	/* Counters for different type of fatal uncorrectable errors */
-	u64 dev_fatal_errs[AER_MAX_TYPEOF_UNCOR_ERRS];
-	/* Counters for different type of nonfatal uncorrectable errors */
-	u64 dev_nonfatal_errs[AER_MAX_TYPEOF_UNCOR_ERRS];
-	/* Total number of ERR_COR sent by this device */
-	u64 dev_total_cor_errs;
-	/* Total number of ERR_FATAL sent by this device */
-	u64 dev_total_fatal_errs;
-	/* Total number of ERR_NONFATAL sent by this device */
-	u64 dev_total_nonfatal_errs;
-
-	/*
-	 * Fields for Root Ports & Root Complex Event Collectors only; these
-	 * indicate the total number of ERR_COR, ERR_FATAL, and ERR_NONFATAL
-	 * messages received by the Root Port / Event Collector, INCLUDING the
-	 * ones that are generated internally (by the Root Port itself)
-	 */
-	u64 rootport_total_cor_errs;
-	u64 rootport_total_fatal_errs;
-	u64 rootport_total_nonfatal_errs;
-
-	/* Ratelimits for errors */
-	struct ratelimit_state correctable_ratelimit;
-	struct ratelimit_state nonfatal_ratelimit;
-};
 
 #define AER_LOG_TLP_MASKS		(PCI_ERR_UNC_POISON_TLP|	\
 					PCI_ERR_UNC_POISON_BLK |	\

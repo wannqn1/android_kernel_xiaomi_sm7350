@@ -314,7 +314,9 @@ int mhi_pm_m0_transition(struct mhi_controller *mhi_cntrl)
 			mhi_ring_cmd_db(mhi_cntrl, mhi_cmd);
 		spin_unlock_irq(&mhi_cmd->lock);
 		/* ring misc doorbells for certain controllers */
+#ifdef CONFIG_MHI_BUS_MISC
 		mhi_misc_dbs_pending(mhi_cntrl);
+#endif
 	}
 
 	/* Ring channel DB registers */

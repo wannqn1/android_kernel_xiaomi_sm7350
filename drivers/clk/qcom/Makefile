@@ -279,3 +279,13 @@ obj-$(CONFIG_VIRTIO_CLK) += virtio_clk_monaco.o
 clk-qcom-objs += clk-debug.o clk-opp.o clk-pm.o vdd-class.o
 clk-qcom-$(CONFIG_QCOM_GDSC) += gdsc-debug.o
 obj-$(CONFIG_COMMON_CLK_QCOM) += clk-dummy.o
+
+obj-$(CONFIG_SM_GCC_7350) += gcc-shima.o
+
+obj-$(CONFIG_SM_CAMCC_7350) += camcc-shima.o
+
+obj-$(CONFIG_SM_DISPCC_7350) += dispcc-shima.o
+
+obj-$(CONFIG_SM_GPUCC_7350) += gpucc-shima.o
+
+obj-$(CONFIG_SM_VIDEOCC_7350) += videocc-shima.o

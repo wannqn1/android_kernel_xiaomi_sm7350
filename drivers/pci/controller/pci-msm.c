@@ -813,8 +813,6 @@ struct msm_pcie_drv_info {
 
 #define AER_ERROR_SOURCES_MAX (128)
 
-#define AER_MAX_TYPEOF_COR_ERRS 16 /* as per PCI_ERR_COR_STATUS */
-#define AER_MAX_TYPEOF_UNCOR_ERRS 27 /* as per PCI_ERR_UNCOR_STATUS*/
 #define	PCI_EXP_AER_FLAGS (PCI_EXP_DEVCTL_CERE | PCI_EXP_DEVCTL_NFERE | \
 			   PCI_EXP_DEVCTL_FERE | PCI_EXP_DEVCTL_URRE)
 
@@ -850,40 +848,6 @@ struct aer_err_source {
 };
 
 /* AER stats for the device */
-struct aer_stats {
-
-	/*
-	 * Fields for all AER capable devices. They indicate the errors
-	 * "as seen by this device". Note that this may mean that if an
-	 * end point is causing problems, the AER counters may increment
-	 * at its link partner (e.g. root port) because the errors will be
-	 * "seen" by the link partner and not he problematic end point
-	 * itself (which may report all counters as 0 as it never saw any
-	 * problems).
-	 */
-	/* Counters for different type of correctable errors */
-	u64 dev_cor_errs[AER_MAX_TYPEOF_COR_ERRS];
-	/* Counters for different type of fatal uncorrectable errors */
-	u64 dev_fatal_errs[AER_MAX_TYPEOF_UNCOR_ERRS];
-	/* Counters for different type of nonfatal uncorrectable errors */
-	u64 dev_nonfatal_errs[AER_MAX_TYPEOF_UNCOR_ERRS];
-	/* Total number of ERR_COR sent by this device */
-	u64 dev_total_cor_errs;
-	/* Total number of ERR_FATAL sent by this device */
-	u64 dev_total_fatal_errs;
-	/* Total number of ERR_NONFATAL sent by this device */
-	u64 dev_total_nonfatal_errs;
-
-	/*
-	 * Fields for Root ports & root complex event collectors only, these
-	 * indicate the total number of ERR_COR, ERR_FATAL, and ERR_NONFATAL
-	 * messages received by the root port / event collector, INCLUDING the
-	 * ones that are generated internally (by the rootport itself)
-	 */
-	u64 rootport_total_cor_errs;
-	u64 rootport_total_fatal_errs;
-	u64 rootport_total_nonfatal_errs;
-};
 
 #define AER_LOG_TLP_MASKS (PCI_ERR_UNC_POISON_TLP| \
 				PCI_ERR_UNC_ECRC| \
@@ -1344,7 +1308,7 @@ struct msm_pcie_dev_t {
 
 	bool aer_dump;
 	bool panic_on_aer;
-	struct aer_stats *aer_stats;
+	struct aer_info *aer_stats;
 	void (*rumi_init)(struct msm_pcie_dev_t *pcie_dev);
 
 	u32 phy_debug_reg_len;
@@ -7287,7 +7251,7 @@ static int msm_pcie_config_device_info(struct pci_dev *pcidev, void *pdev)
 
 	if (pcie_dev->aer_enable) {
 		if (pci_pcie_type(pcidev) == PCI_EXP_TYPE_ROOT_PORT)
-			pcie_dev->aer_stats = pcidev->aer_stats;
+			pcie_dev->aer_stats = pcidev->aer_info;
 
 		if (msm_pcie_enable_pcie_error_reporting(pcidev))
 			PCIE_ERR(pcie_dev,
@@ -7887,7 +7851,7 @@ static void msm_pci_dev_aer_stats_incr(struct pci_dev *pdev,
 	unsigned long status = info->status & ~info->mask;
 	int i, max = -1;
 	u64 *counter = NULL;
-	struct aer_stats *aer_stats = pdev->aer_stats;
+	struct aer_info *aer_stats = pdev->aer_info;
 
 	if (!aer_stats)
 		return;
@@ -7917,7 +7881,7 @@ static void msm_pci_dev_aer_stats_incr(struct pci_dev *pdev,
 static void msm_pci_rootport_aer_stats_incr(struct pci_dev *pdev,
 					    struct aer_err_source *e_src)
 {
-	struct aer_stats *aer_stats = pdev->aer_stats;
+	struct aer_info *aer_stats = pdev->aer_info;
 
 	if (!aer_stats)
 		return;

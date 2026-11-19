@@ -211,4 +211,8 @@ fi
 
 # redwood: release the kernel as Suvkernel, like the 5.4 builds, instead of
 # Kleaf's -android16-6-maybe-dirty plus the lahaina -4k
-echo "${KERNELVERSION}-Suvkernel"
+if [ "$config_localversion" = "-renoir" ]; then
+	echo "${KERNELVERSION}-renoir"
+else
+	echo "${KERNELVERSION}-Suvkernel"
+fi

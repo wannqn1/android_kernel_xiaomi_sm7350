@@ -366,7 +366,7 @@ source "drivers/pci/controller/plda/Kconfig"
 # Qualcomm (from 6.12 soc-repo)
 config PCI_MSM
 	tristate "MSM PCIe Controller driver"
-	depends on ARCH_QCOM && PCI
+	depends on ARCH_QCOM && PCI && PCIEAER
 	depends on PCI_DOMAINS
 	depends on PCI_DOMAINS_GENERIC
 	depends on PCI_MSI
