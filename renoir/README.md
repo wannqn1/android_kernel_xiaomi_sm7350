@@ -4,10 +4,10 @@ Run this from a dedicated Linux kernel workspace. The clone destination names
 match those expected by the Qualcomm module build scripts.
 
 ```sh
-git clone -b renoir-6.18 https://github.com/wannqn1/android_kernel_xiaomi_sm7350.git redwood-6.18-kernel
-git clone -b renoir-6.18 https://github.com/wannqn1/android_kernel_xiaomi_sm7350-devicetrees.git redwood-6.18-devicetrees
-git clone -b renoir-6.18 https://github.com/wannqn1/android_kernel_xiaomi_sm7350-modules.git redwood-6.18-modules
-git clone -b lineage-24.0 https://github.com/LineageOS/android_system_libufdt.git references/libufdt
+git clone --depth 1 -b renoir-6.18 https://github.com/wannqn1/android_kernel_xiaomi_sm7350.git redwood-6.18-kernel
+git clone --depth 1 -b renoir-6.18 https://github.com/wannqn1/android_kernel_xiaomi_sm7350-devicetrees.git redwood-6.18-devicetrees
+git clone --depth 1 -b renoir-6.18 https://github.com/wannqn1/android_kernel_xiaomi_sm7350-modules.git redwood-6.18-modules
+git clone --depth 1 -b lineage-24.0 https://github.com/LineageOS/android_system_libufdt.git references/libufdt
 ```
 
 The port was built with LLVM 22.1.8, Rust 1.88.0, bindgen 0.72.1 and pahole
@@ -19,6 +19,7 @@ installation in a different location.
 ```sh
 export RUSTUP_HOME="$PWD/work/toolchain/rustup"
 export CARGO_HOME="$PWD/work/toolchain/cargo"
+mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
 rustup toolchain install 1.88.0 --profile minimal -c rust-src -c rustfmt
 cargo +1.88.0 install --locked bindgen-cli --version 0.72.1
 
