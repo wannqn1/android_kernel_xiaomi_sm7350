@@ -296,6 +296,9 @@ wcd938x_slave_dlkm.ko
 wcd9xxx_dlkm.ko
 wcd_core_dlkm.ko
 wlan_firmware_service.ko
+pci-msm-drv.ko
+mhi.ko
+cnss2.ko
 wlan.ko
 wsa883x_dlkm.ko
 wsa_macro_dlkm.ko
@@ -303,5 +306,3 @@ xiaomi_touch.ko
 goodix_core.ko
 goodix_ts_gesture.ko
 focaltech_touch.ko
-pci-msm-drv.ko
-mhi.ko
