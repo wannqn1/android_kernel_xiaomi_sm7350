@@ -46,6 +46,7 @@ struct dcvs_hw {
 
 
 int populate_l3_table(struct device *dev, u32 **freq_table);
+int commit_epss_l3_cpu(struct dcvs_path *path, struct dcvs_freq *freq, int cpu);
 int setup_epss_l3_sp_device(struct device *dev, struct dcvs_hw *hw,
 					struct dcvs_path *path);
 int setup_epss_l3_percpu_device(struct device *dev, struct dcvs_hw *hw,

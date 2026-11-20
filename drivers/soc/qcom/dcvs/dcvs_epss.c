@@ -111,28 +111,21 @@ int populate_l3_table(struct device *dev, u32 **freq_table)
 }
 
 static int commit_epss_l3(struct dcvs_path *path, struct dcvs_freq *freqs,
-						u32 update_mask, bool shared)
+						int cpu)
 {
 	struct dcvs_hw *hw = path->hw;
 	struct epss_dev_data *d = path->data;
-	int cpu;
 	u32 idx, offset;
 
-	for (idx = 0; idx < hw->table_len; idx++)
+	for (idx = 0; idx + 1 < hw->table_len; idx++)
 		if (freqs->ib <= hw->freq_table[idx])
 			break;
 
-	if (hw->type == DCVS_L3) {
-		if (shared)
-			offset = d->l3_shared_offset;
-		else {
-			cpu = smp_processor_id();
-			offset = d->l3_percpu_offsets[cpu];
-		}
-		writel_relaxed(idx, d->l3_base + offset);
-	}
+	offset = cpu < 0 ? d->l3_shared_offset : d->l3_percpu_offsets[cpu];
+	writel_relaxed(idx, d->l3_base + offset);
 
-	path->cur_freq.ib = freqs->ib;
+	if (cpu < 0)
+		path->cur_freq.ib = freqs->ib;
 
 	return 0;
 }
@@ -141,14 +134,19 @@ static int commit_epss_l3_shared(struct dcvs_path *path,
 						struct dcvs_freq *freqs,
 						u32 update_mask)
 {
-	return commit_epss_l3(path, freqs, update_mask, true);
+	return commit_epss_l3(path, freqs, -1);
 }
 
 static int commit_epss_l3_percpu(struct dcvs_path *path,
 						struct dcvs_freq *freqs,
 						u32 update_mask)
 {
-	return commit_epss_l3(path, freqs, update_mask, false);
+	return commit_epss_l3(path, freqs, smp_processor_id());
+}
+
+int commit_epss_l3_cpu(struct dcvs_path *path, struct dcvs_freq *freq, int cpu)
+{
+	return commit_epss_l3(path, freq, cpu);
 }
 
 static int init_epss_data(struct device *dev)

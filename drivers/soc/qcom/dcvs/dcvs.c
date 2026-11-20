@@ -448,7 +448,7 @@ static int qcom_dcvs_percpu_update(const char *name, struct dcvs_freq *votes,
 			return -EINVAL;
 
 		/* should match one and only voter in list */
-		voter = list_first_entry(&path->voter_list, struct dcvs_voter,
+		voter = list_first_entry_or_null(&path->voter_list, struct dcvs_voter,
 									node);
 		if (!voter || strcmp(voter->name, name))
 			return -EINVAL;
@@ -460,6 +460,7 @@ static int qcom_dcvs_percpu_update(const char *name, struct dcvs_freq *votes,
 			ret = path->commit_dcvs_freqs(path, &new_freq, 1);
 			if (ret < 0)
 				return ret;
+			path->percpu_cur_freqs[cpu] = new_freq.ib;
 		}
 		trace_qcom_dcvs_update(name, hw_type, path->type, votes[i].ib,
 					new_freq.ib, 0, 0, 0);
@@ -486,6 +487,42 @@ int qcom_dcvs_update_votes(const char *name, struct dcvs_freq *votes,
 }
 EXPORT_SYMBOL_GPL(qcom_dcvs_update_votes);
 
+/* EPSS vote registers are accessible from any CPU. */
+int qcom_dcvs_update_l3_vote(const char *name, int cpu, u32 khz)
+{
+	struct dcvs_freq freq = { .hw_type = DCVS_L3 };
+	struct dcvs_path *path;
+	struct dcvs_voter *voter;
+	int ret = 0;
+
+	if (!name || cpu < 0 || cpu >= nr_cpu_ids || !cpu_possible(cpu))
+		return -EINVAL;
+
+	path = get_dcvs_path(DCVS_L3, DCVS_PERCPU_PATH);
+	if (!path)
+		return -EPROBE_DEFER;
+
+	mutex_lock(&path->voter_lock);
+	voter = list_first_entry_or_null(&path->voter_list, struct dcvs_voter, node);
+	if (!voter || strcmp(voter->name, name)) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+
+	freq.ib = get_target_freq(path, khz);
+	if (path->percpu_cur_freqs[cpu] != freq.ib) {
+		ret = commit_epss_l3_cpu(path, &freq, cpu);
+		if (!ret)
+			path->percpu_cur_freqs[cpu] = freq.ib;
+	}
+	trace_qcom_dcvs_update(name, DCVS_L3, DCVS_PERCPU_PATH, khz,
+			      freq.ib, 0, 0, 0);
+unlock:
+	mutex_unlock(&path->voter_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(qcom_dcvs_update_l3_vote);
+
 int qcom_dcvs_register_voter(const char *name, enum dcvs_hw_type hw_type,
 				enum dcvs_path_type path_type)
 {
@@ -496,7 +533,7 @@ int qcom_dcvs_register_voter(const char *name, enum dcvs_hw_type hw_type,
 	if (!name || hw_type >= NUM_DCVS_HW_TYPES || path_type >= NUM_DCVS_PATHS)
 		return -EINVAL;
 
-	if (!dcvs_data->inited)
+	if (!dcvs_data || !dcvs_data->inited)
 		return -EPROBE_DEFER;
 
 	path = get_dcvs_path(hw_type, path_type);
@@ -504,7 +541,7 @@ int qcom_dcvs_register_voter(const char *name, enum dcvs_hw_type hw_type,
 		return -ENODEV;
 
 	mutex_lock(&path->voter_lock);
-	if (path_type == DCVS_FAST_PATH && path->num_voters >= 1) {
+	if (path_type != DCVS_SLOW_PATH && path->num_voters >= 1) {
 		ret = -EINVAL;
 		goto unlock_out;
 	}
@@ -573,7 +610,7 @@ struct kobject *qcom_dcvs_kobject_get(enum dcvs_hw_type type)
 	if (type > NUM_DCVS_HW_TYPES)
 		return ERR_PTR(-EINVAL);
 
-	if (!dcvs_data->inited)
+	if (!dcvs_data || !dcvs_data->inited)
 		return ERR_PTR(-EPROBE_DEFER);
 
 	if (type == NUM_DCVS_HW_TYPES)
@@ -597,7 +634,7 @@ int qcom_dcvs_hw_minmax_get(enum dcvs_hw_type hw_type, u32 *min, u32 *max)
 	if (hw_type >= NUM_DCVS_HW_TYPES)
 		return -EINVAL;
 
-	if (!dcvs_data->inited)
+	if (!dcvs_data || !dcvs_data->inited)
 		return -EPROBE_DEFER;
 
 	hw = dcvs_data->hw_devs[hw_type];
@@ -659,9 +696,8 @@ static int populate_freq_table(struct device *dev, u32 **freq_table)
 	if (!of_node)
 		of_node = dev->of_node;
 
-	if (of_get_child_count(of_node))
-		of_tbl_node = qcom_dcvs_get_ddr_child_node(of_node);
-	else
+	of_tbl_node = qcom_dcvs_get_ddr_child_node(of_node);
+	if (!of_tbl_node)
 		of_tbl_node = of_node;
 
 	if (!of_find_property(of_tbl_node, FTBL_PROP, &len)) {
@@ -690,6 +726,8 @@ static int populate_freq_table(struct device *dev, u32 **freq_table)
 	ret = len;
 
 out:
+	if (of_tbl_node != of_node)
+		of_node_put(of_tbl_node);
 	if (of_node != dev->of_node)
 		of_node_put(of_node);
 	return ret;
@@ -853,7 +891,7 @@ static int qcom_dcvs_path_probe(struct platform_device *pdev)
 			dev_err(dev, "Unsupported HW for path: %d\n", ret);
 			return -EINVAL;
 		}
-		path->percpu_cur_freqs = devm_kzalloc(dev, num_possible_cpus() *
+		path->percpu_cur_freqs = devm_kzalloc(dev, nr_cpu_ids *
 						sizeof(*path->percpu_cur_freqs),
 						GFP_KERNEL);
 		if (!path->percpu_cur_freqs)

@@ -205,6 +205,7 @@ struct memlat_group {
 	enum dcvs_path_type		threadlat_path_type;
 	bool				cpucp_enabled;
 	u32				sampling_cur_freq;
+	u32				*percpu_votes;
 	u32				adaptive_cur_freq;
 	u32				adaptive_high_freq;
 	u32				adaptive_low_freq;
@@ -923,14 +924,17 @@ static void calculate_sampling_stats(void)
 			}
 		}
 
-		stats->freq_mhz = delta->common_ctrs[CYC_IDX] / delta_us;
-		if (!memlat_data->common_ev_ids[FE_STALL_IDX])
+		stats->freq_mhz = delta_us > 0 ?
+			div64_u64(delta->common_ctrs[CYC_IDX], delta_us) : 0;
+		if (!memlat_data->common_ev_ids[FE_STALL_IDX] ||
+		    !delta->common_ctrs[CYC_IDX])
 			stats->fe_stall_pct = 100;
 		else
 			stats->fe_stall_pct = mult_frac(100,
 					       delta->common_ctrs[FE_STALL_IDX],
 					       delta->common_ctrs[CYC_IDX]);
-		if (!memlat_data->common_ev_ids[BE_STALL_IDX])
+		if (!memlat_data->common_ev_ids[BE_STALL_IDX] ||
+		    !delta->common_ctrs[CYC_IDX])
 			stats->be_stall_pct = 100;
 		else
 			stats->be_stall_pct = mult_frac(100,
@@ -949,7 +953,8 @@ static void calculate_sampling_stats(void)
 					delta->grp_ctrs[grp][MISS_IDX];
 
 			if (!memlat_grp->grp_ev_ids[WB_IDX]
-					|| !memlat_grp->grp_ev_ids[ACC_IDX])
+					|| !memlat_grp->grp_ev_ids[ACC_IDX]
+					|| !delta->grp_ctrs[grp][ACC_IDX])
 				stats->wb_pct[grp] = 0;
 			else
 				stats->wb_pct[grp] = mult_frac(100,
@@ -1006,12 +1011,18 @@ static inline void apply_adaptive_freq(struct memlat_group *memlat_grp,
 				0, 0, 0, 0, memlat_grp->adaptive_cur_freq);
 }
 
-static void calculate_mon_sampling_freq(struct memlat_mon *mon)
+static u32 sampling_memfreq(struct memlat_mon *mon, u32 cpufreq)
+{
+	return clamp(cpufreq_to_memfreq(mon, cpufreq), mon->min_freq,
+		     mon->max_freq);
+}
+
+static void calculate_mon_sampling_freq(struct memlat_mon *mon, u32 *percpu_votes)
 {
 	struct cpu_stats *stats;
 	int cpu, max_cpu = cpumask_first(&mon->cpus);
 	u32 max_memfreq, max_cpufreq = 0;
-	u32 max_cpufreq_scaled = 0, ipm_diff;
+	u32 cpufreq, ipm_diff, freq;
 	u32 hw = mon->memlat_grp->hw_type;
 
 	if (hw >= NUM_DCVS_HW_TYPES)
@@ -1019,31 +1030,31 @@ static void calculate_mon_sampling_freq(struct memlat_mon *mon)
 
 	for_each_cpu(cpu, &mon->cpus) {
 		stats = per_cpu(sampling_stats, cpu);
+		cpufreq = 0;
 		if (mon->is_compute || (stats->wb_pct[hw] >= mon->wb_pct_thres
-		    && stats->ipm[hw] <= mon->wb_filter_ipm))
-			set_higher_freq(&max_cpu, cpu, &max_cpufreq,
-					stats->freq_mhz);
-		else if (stats->ipm[hw] <= mon->ipm_ceil) {
+		    && stats->ipm[hw] <= mon->wb_filter_ipm)) {
+			cpufreq = stats->freq_mhz;
+		} else if (stats->ipm[hw] <= mon->ipm_ceil) {
 			ipm_diff = mon->ipm_ceil - stats->ipm[hw];
-			max_cpufreq_scaled = stats->freq_mhz;
+			cpufreq = stats->freq_mhz;
 			if (mon->freq_scale_pct &&
-			    (stats->freq_mhz > mon->freq_scale_floor_mhz &&
-			     stats->freq_mhz < mon->freq_scale_ceil_mhz) &&
+			    (cpufreq > mon->freq_scale_floor_mhz &&
+			     cpufreq < mon->freq_scale_ceil_mhz) &&
 			    (stats->fe_stall_pct >= mon->fe_stall_floor ||
 			     stats->be_stall_pct >= mon->be_stall_floor)) {
-				max_cpufreq_scaled += (stats->freq_mhz * ipm_diff *
-					mon->freq_scale_pct) / (mon->ipm_ceil * 100);
-				max_cpufreq_scaled = min(mon->freq_scale_ceil_mhz,
-							 max_cpufreq_scaled);
+				cpufreq += (cpufreq * ipm_diff * mon->freq_scale_pct) /
+					   (mon->ipm_ceil * 100);
+				cpufreq = min(mon->freq_scale_ceil_mhz, cpufreq);
 			}
-			set_higher_freq(&max_cpu, cpu, &max_cpufreq,
-					max_cpufreq_scaled);
+		}
+		set_higher_freq(&max_cpu, cpu, &max_cpufreq, cpufreq);
+		if (percpu_votes) {
+			freq = sampling_memfreq(mon, cpufreq);
+			percpu_votes[cpu] = max(percpu_votes[cpu], freq);
 		}
 	}
 
-	max_memfreq = cpufreq_to_memfreq(mon, max_cpufreq);
-	max_memfreq = max(max_memfreq, mon->min_freq);
-	max_memfreq = min(max_memfreq, mon->max_freq);
+	max_memfreq = sampling_memfreq(mon, max_cpufreq);
 
 	if (max_cpufreq || mon->cur_freq != mon->min_freq) {
 		stats = per_cpu(sampling_stats, max_cpu);
@@ -1054,6 +1065,21 @@ static void calculate_mon_sampling_freq(struct memlat_mon *mon)
 	}
 
 	mon->cur_freq = max_memfreq;
+}
+
+static void update_percpu_sampling_votes(struct memlat_group *grp)
+{
+	int cpu, ret;
+
+	cpus_read_lock();
+	for_each_online_cpu(cpu) {
+		ret = qcom_dcvs_update_l3_vote(dev_name(grp->dev), cpu,
+					     grp->percpu_votes[cpu]);
+		if (ret)
+			dev_err_ratelimited(grp->dev,
+					    "CPU %d DCVS vote failed: %d\n", cpu, ret);
+	}
+	cpus_read_unlock();
 }
 
 /*
@@ -1134,11 +1160,14 @@ static void memlat_update_work(struct work_struct *work)
 		memlat_grp = memlat_data->groups[grp];
 		if (!memlat_grp)
 			continue;
+		if (memlat_grp->percpu_votes)
+			memset(memlat_grp->percpu_votes, 0,
+			       nr_cpu_ids * sizeof(*memlat_grp->percpu_votes));
 		for (i = 0; i < memlat_grp->num_inited_mons; i++) {
 			mon = &memlat_grp->mons[i];
 			if (!mon || !(mon->type & SAMPLING_MON))
 				continue;
-			calculate_mon_sampling_freq(mon);
+			calculate_mon_sampling_freq(mon, memlat_grp->percpu_votes);
 			max_freqs[grp] = max(mon->cur_freq, max_freqs[grp]);
 		}
 		if (memlat_grp->adaptive_high_freq ||
@@ -1152,8 +1181,14 @@ static void memlat_update_work(struct work_struct *work)
 
 	for (grp = 0; grp < MAX_MEMLAT_GRPS; grp++) {
 		memlat_grp = memlat_data->groups[grp];
-		if (!memlat_grp || memlat_grp->sampling_cur_freq == max_freqs[grp] ||
-		    memlat_grp->sampling_path_type == NUM_DCVS_PATHS)
+		if (!memlat_grp || memlat_grp->sampling_path_type == NUM_DCVS_PATHS)
+			continue;
+		if (memlat_grp->percpu_votes) {
+			update_percpu_sampling_votes(memlat_grp);
+			memlat_grp->sampling_cur_freq = max_freqs[grp];
+			continue;
+		}
+		if (memlat_grp->sampling_cur_freq == max_freqs[grp])
 			continue;
 		memlat_grp->sampling_cur_freq = max_freqs[grp];
 		if (memlat_grp->fp_voting_enabled)
@@ -1844,6 +1879,7 @@ static int memlat_grp_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct memlat_group *memlat_grp;
+	const char *voter_name;
 	int i, cpu, ret;
 	u32 event_id, num_mons;
 	u32 hw_type = NUM_DCVS_PATHS, path_type = NUM_DCVS_PATHS;
@@ -1891,16 +1927,13 @@ static int memlat_grp_probe(struct platform_device *pdev)
 			of_node_put(of_node);
 			return -EINVAL;
 		}
-		if (path_type == DCVS_FAST_PATH)
-			ret = qcom_dcvs_register_voter(FP_NAME, hw_type,
-								path_type);
-		else
-			ret = qcom_dcvs_register_voter(dev_name(dev), hw_type,
-								path_type);
-		if (ret < 0) {
-			dev_err(dev, "qcom dcvs registration error: %d\n", ret);
-			of_node_put(of_node);
-			return ret;
+		if (path_type == DCVS_PERCPU_PATH) {
+			memlat_grp->percpu_votes = devm_kcalloc(dev, nr_cpu_ids,
+					sizeof(*memlat_grp->percpu_votes), GFP_KERNEL);
+			if (!memlat_grp->percpu_votes) {
+				of_node_put(of_node);
+				return -ENOMEM;
+			}
 		}
 		memlat_grp->sampling_path_type = path_type;
 	} else
@@ -1922,7 +1955,8 @@ static int memlat_grp_probe(struct platform_device *pdev)
 		memlat_grp->threadlat_path_type = NUM_DCVS_PATHS;
 
 	of_node_put(of_node);
-	if (path_type >= NUM_DCVS_PATHS) {
+	if (memlat_grp->sampling_path_type == NUM_DCVS_PATHS &&
+	    memlat_grp->threadlat_path_type == NUM_DCVS_PATHS) {
 		dev_err(dev, "error: no dcvs voting paths\n");
 		return -ENODEV;
 	}
@@ -1985,8 +2019,22 @@ static int memlat_grp_probe(struct platform_device *pdev)
 		}
 	}
 
+	path_type = memlat_grp->sampling_path_type;
+	voter_name = path_type == DCVS_FAST_PATH ? FP_NAME : dev_name(dev);
+	if (path_type < NUM_DCVS_PATHS) {
+		ret = qcom_dcvs_register_voter(voter_name, hw_type, path_type);
+		if (ret)
+			return dev_err_probe(dev, ret, "could not register DCVS voter\n");
+	}
+
 	ret = kobject_init_and_add(&memlat_grp->kobj, &memlat_grp_ktype,
-				memlat_grp->dcvs_kobj, "memlat");
+				  memlat_grp->dcvs_kobj, "memlat");
+	if (ret) {
+		kobject_put(&memlat_grp->kobj);
+		if (path_type < NUM_DCVS_PATHS)
+			qcom_dcvs_unregister_voter(voter_name, hw_type, path_type);
+		return ret;
+	}
 
 	mutex_lock(&memlat_lock);
 	memlat_data->num_inited_grps++;
@@ -2092,13 +2140,14 @@ static int memlat_mon_probe(struct platform_device *pdev)
 	if (!of_node)
 		of_node = dev->of_node;
 
-	if (of_get_child_count(of_node))
-		of_tbl_node = qcom_dcvs_get_ddr_child_node(of_node);
-	else
+	of_tbl_node = qcom_dcvs_get_ddr_child_node(of_node);
+	if (!of_tbl_node)
 		of_tbl_node = of_node;
 
 	mon->freq_map = init_cpufreq_memfreq_map(dev, of_tbl_node,
 						 &mon->freq_map_len);
+	if (of_tbl_node != of_node)
+		of_node_put(of_tbl_node);
 
 	if (of_node != dev->of_node)
 		of_node_put(of_node);

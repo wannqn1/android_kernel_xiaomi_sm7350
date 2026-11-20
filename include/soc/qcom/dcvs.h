@@ -36,6 +36,7 @@ struct dcvs_freq {
 };
 
 #if IS_ENABLED(CONFIG_QCOM_DCVS)
+int qcom_dcvs_update_l3_vote(const char *name, int cpu, u32 khz);
 int qcom_dcvs_register_voter(const char *name, enum dcvs_hw_type hw_type,
 			enum dcvs_path_type path_type);
 int qcom_dcvs_unregister_voter(const char *name, enum dcvs_hw_type hw_type,
@@ -46,6 +47,10 @@ struct kobject *qcom_dcvs_kobject_get(enum dcvs_hw_type type);
 int qcom_dcvs_hw_minmax_get(enum dcvs_hw_type hw_type, u32 *min, u32 *max);
 struct device_node *qcom_dcvs_get_ddr_child_node(struct device_node *of_parent);
 #else
+static inline int qcom_dcvs_update_l3_vote(const char *name, int cpu, u32 khz)
+{
+	return -ENODEV;
+}
 static inline int qcom_dcvs_register_voter(const char *name,
 		enum dcvs_hw_type hw_type, enum dcvs_path_type path_type)
 {
