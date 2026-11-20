@@ -33,7 +33,7 @@ kmake() {
 }
 
 usage() {
-    echo "Usage: $0 [kernel|dt|modules|stage] ..." >&2
+    echo "Usage: $0 [kernel|dt|modules|stage|cvp] ..." >&2
     exit 2
 }
 
@@ -75,6 +75,15 @@ for step in "$@"; do
                 kmake -j"$JOBS" M="$source_dir" MO="$work/vb/renoir/$driver" \
                     "${touch_symbols[@]}" modules 2>&1 | tee "$work/logs/$driver.log"
             done
+            ;;
+        cvp)
+            source_dir=$modules/renoir/cvp
+            cvp_build=$work/vb/renoir/cvp
+            kmake -j"$JOBS" M="$source_dir/synx" MO="$cvp_build/synx" modules
+            kmake -j"$JOBS" M="$source_dir/driver" MO="$cvp_build/driver" \
+                "KBUILD_EXTRA_SYMBOLS=$cvp_build/synx/Module.symvers" modules
+            CC="$CLANG/clang" "$tools/build-renoir-dt.sh" "$work/dt-cvp" cvp
+            "$tools/stage-renoir-kernel.py" "$root" "$work" --cvp
             ;;
         stage)
             "$tools/stage-renoir-kernel.py" "$root" "$work"

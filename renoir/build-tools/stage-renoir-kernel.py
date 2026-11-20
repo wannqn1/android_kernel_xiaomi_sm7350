@@ -17,18 +17,26 @@ def index_modules(path):
 
 
 def main():
-    root, work = map(pathlib.Path, sys.argv[1:])
+    if len(sys.argv) not in (3, 4) or sys.argv[3:] not in ([], ["--cvp"]):
+        raise SystemExit("Usage: stage-renoir-kernel.py ROOT BUILD_DIR [--cvp]")
+    root, work = map(pathlib.Path, sys.argv[1:3])
+    cvp_test = len(sys.argv) == 4
     kernel = root / "redwood-6.18-kernel"
     out = work / "out"
-    dt = work / "dt"
-    destination = root / "device/xiaomi/renoir-kernel-6.18"
+    dt = work / ("dt-cvp" if cvp_test else "dt")
+    destination = (work / "cvp-test" if cvp_test else root) / "device/xiaomi/renoir-kernel-6.18"
     release = (out / "include/config/kernel.release").read_text().strip()
     if not release.startswith("6.18.") or not release.endswith("-Tempest"):
         raise SystemExit(f"Expected a 6.18 Tempest build, got {release}")
     modules = index_modules(out)
-    modules.update(index_modules(work / "vb"))
+    for name, paths in index_modules(work / "vb").items():
+        modules[name].extend(paths)
     names = (kernel / "renoir/modules.load").read_text().splitlines()
     names = [line for line in names if line and not line.startswith("#")]
+    if cvp_test:
+        names.extend(("synx-driver.ko", "msm-cvp.ko"))
+    if len(names) != len(set(names)):
+        raise SystemExit("Duplicate entries in the Renoir module load list")
     missing = [name for name in names if name not in modules]
     ambiguous = [name for name in names if len(modules.get(name, [])) > 1]
     if missing or ambiguous:
