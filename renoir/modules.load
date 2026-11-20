@@ -129,6 +129,7 @@ qti-fixed-regulator.ko
 refgen.ko
 qpnp-lcdb-regulator.ko
 qcom-pm8008-regulator.ko
+pm8008-renoir.ko
 qcom_pil_info.ko
 qcom_q6v5.ko
 qcom_q6v5_pas.ko

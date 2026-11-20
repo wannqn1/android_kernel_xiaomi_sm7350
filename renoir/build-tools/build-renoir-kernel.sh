@@ -64,7 +64,7 @@ for step in "$@"; do
             done 2>&1 | tee "$work/logs/vendor.log"
             bash "$modules/bringup/build-redwood618.sh" xiaomitouch btpower btfmslim \
                 ioncompat irspi mithermal subsys_compat adsprpc video 2>&1 | tee -a "$work/logs/vendor.log"
-            for driver in fpc goodix focaltech tfa9874; do
+            for driver in fpc goodix focaltech tfa9874 pm8008; do
                 source_dir=$modules/renoir/$driver
                 touch_symbols=()
                 case "$driver" in
