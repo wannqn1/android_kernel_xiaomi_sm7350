@@ -6,6 +6,7 @@
 
 #define pr_fmt(fmt) "qcom-dcvs-epss: " fmt
 
+#include <linux/cpumask.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -24,90 +25,66 @@
 
 struct epss_dev_data {
 	void __iomem	*l3_base;
+	resource_size_t	l3_size;
 	u32		l3_shared_offset;
 	u32		*l3_percpu_offsets;
 };
-
-struct epss_dev_data *epss_data;
-static DEFINE_MUTEX(epss_lock);
-
-#define L3_VOTING_OFFSET	0x90
-#define L3_DOMAIN_OFFSET	0x1000
 
 #define MAX_L3_ENTRIES		40U
 #define INIT_HZ			300000000UL
 #define XO_HZ			19200000UL
 #define FTBL_ROW_SIZE		4
 #define SRC_MASK		GENMASK(31, 30)
-#define SRC_SHIFT		30
 #define MULT_MASK		GENMASK(7, 0)
 int populate_l3_table(struct device *dev, u32 **freq_table)
 {
-	int idx, ret, len;
-	u32 data, src, mult;
-	unsigned long freq, prev_freq = 0;
 	struct resource res;
-	void __iomem *ftbl_base;
-	unsigned int ftbl_row_size;
-	u32 *tmp_l3_table;
+	void __iomem *base;
+	u32 row_size = FTBL_ROW_SIZE;
+	u32 rates[MAX_L3_ENTRIES];
+	unsigned long prev_freq = 0, freq;
+	unsigned int count, i;
+	u32 entry;
+	int idx, ret;
 
 	idx = of_property_match_string(dev->of_node, "reg-names", "l3tbl-base");
-	if (idx < 0) {
-		dev_err(dev, "Unable to find l3tbl-base: %d\n", idx);
-		return -EINVAL;
-	}
+	if (idx < 0)
+		return dev_err_probe(dev, idx, "missing L3 frequency table\n");
 
 	ret = of_address_to_resource(dev->of_node, idx, &res);
-	if (ret < 0) {
-		dev_err(dev, "Unable to get resource from address: %d\n", ret);
-		return -EINVAL;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "invalid L3 frequency table resource\n");
 
-	ftbl_base = ioremap(res.start, resource_size(&res));
-	if (!ftbl_base) {
-		dev_err(dev, "Unable to map l3tbl-base!\n");
+	of_property_read_u32(dev->of_node, "qcom,ftbl-row-size", &row_size);
+	if (row_size < sizeof(u32) || !IS_ALIGNED(row_size, sizeof(u32)) ||
+	    resource_size(&res) < sizeof(u32))
+		return dev_err_probe(dev, -EINVAL, "invalid L3 frequency table geometry\n");
+
+	count = min_t(resource_size_t, MAX_L3_ENTRIES,
+		      1 + (resource_size(&res) - sizeof(u32)) / row_size);
+	base = ioremap(res.start, resource_size(&res));
+	if (!base)
 		return -ENOMEM;
-	}
 
-	ret = of_property_read_u32(dev->of_node, "qcom,ftbl-row-size",
-						&ftbl_row_size);
-	if (ret < 0)
-		ftbl_row_size = FTBL_ROW_SIZE;
-
-	tmp_l3_table = kcalloc(MAX_L3_ENTRIES, sizeof(*tmp_l3_table), GFP_KERNEL);
-	if (!tmp_l3_table) {
-		iounmap(ftbl_base);
-		return -ENOMEM;
-	}
-
-	for (idx = 0; idx < MAX_L3_ENTRIES; idx++) {
-		data = readl_relaxed(ftbl_base + idx * ftbl_row_size);
-		src = ((data & SRC_MASK) >> SRC_SHIFT);
-		mult = (data & MULT_MASK);
-		freq = src ? XO_HZ * mult : INIT_HZ;
-
-		/* Two of the same frequencies means end of table */
-		if (idx > 0 && prev_freq == freq)
+	for (i = 0; i < count; i++) {
+		entry = readl_relaxed(base + i * row_size);
+		freq = entry & SRC_MASK ? XO_HZ * (entry & MULT_MASK) : INIT_HZ;
+		if (!freq || (i && freq == prev_freq))
 			break;
 
-		tmp_l3_table[idx] = freq / 1000UL;
+		rates[i] = freq / 1000;
 		prev_freq = freq;
 	}
-	len = idx;
+	iounmap(base);
 
-	*freq_table = devm_kzalloc(dev, len * sizeof(**freq_table), GFP_KERNEL);
-	if (!*freq_table) {
-		iounmap(ftbl_base);
+	if (!i)
+		return dev_err_probe(dev, -ENODEV, "empty L3 frequency table\n");
+
+	*freq_table = devm_kmemdup(dev, rates, i * sizeof(*rates), GFP_KERNEL);
+	if (!*freq_table)
 		return -ENOMEM;
-	}
 
-	for (idx = 0; idx < len; idx++)
-		(*freq_table)[idx] = tmp_l3_table[idx];
-
-	iounmap(ftbl_base);
-	kfree(tmp_l3_table);
-
-	return len;
+	return i;
 }
 
 static int commit_epss_l3(struct dcvs_path *path, struct dcvs_freq *freqs,
@@ -149,130 +126,110 @@ int commit_epss_l3_cpu(struct dcvs_path *path, struct dcvs_freq *freq, int cpu)
 	return commit_epss_l3(path, freq, cpu);
 }
 
-static int init_epss_data(struct device *dev)
+static bool epss_valid_offset(struct epss_dev_data *data, u32 offset)
 {
-	int idx, ret = 0;
-	struct resource res;
-
-	epss_data = devm_kzalloc(dev, sizeof(*epss_data), GFP_KERNEL);
-	if (!epss_data)
-		return -ENOMEM;
-
-	idx = of_property_match_string(dev->parent->of_node, "reg-names",
-								"l3-base");
-	if (idx < 0) {
-		dev_err(dev, "%s: Unable to find l3-base: %d\n", __func__, idx);
-		return -EINVAL;
-	}
-
-	ret = of_address_to_resource(dev->parent->of_node, idx, &res);
-	if (ret < 0) {
-		dev_err(dev, "Unable to get resource from address: %d\n", ret);
-		return ret;
-	}
-
-	epss_data->l3_base = devm_ioremap(dev->parent, res.start,
-							resource_size(&res));
-	if (!epss_data->l3_base) {
-		dev_err(dev, "Unable to map l3-base!\n");
-		return -ENOMEM;
-	}
-
-	return ret;
-
-}
-
-static int populate_shared_offset(struct device *dev, u32 *offset)
-{
-	int ret;
-
-	ret = of_property_read_u32(dev->of_node, "qcom,shared-offset", offset);
-	if (ret < 0) {
-		dev_err(dev, "Error reading shared offset: %d\n", ret);
-		return ret;
-	}
-
-	return ret;
+	return IS_ALIGNED(offset, sizeof(u32)) &&
+	       offset <= data->l3_size - sizeof(u32);
 }
 
 #define PERCPU_OFFSETS	"qcom,percpu-offsets"
-static int populate_percpu_offsets(struct device *dev, u32 **cpu_offsets)
+static int populate_percpu_offsets(struct device *dev, struct epss_dev_data *data)
 {
-	int ret, len;
-	struct device_node *of_node = dev->of_node;
+	struct device_node *np = dev->of_node;
+	struct device_node *table;
+	unsigned int cpu;
+	int words, ret;
 
-	of_node = of_parse_phandle(of_node, PERCPU_OFFSETS, 0);
-	if (!of_node)
-		of_node = dev->of_node;
+	words = of_property_count_u32_elems(np, PERCPU_OFFSETS);
+	/* A single cell can refer to a separate offset table. */
+	table = words == 1 && nr_cpu_ids > 1 ?
+		of_parse_phandle(np, PERCPU_OFFSETS, 0) : NULL;
+	if (table)
+		np = table;
 
-	if (!of_find_property(of_node, PERCPU_OFFSETS, &len)) {
-		dev_err(dev, "Unable to find percpu offsets prop!\n");
+	words = of_property_count_u32_elems(np, PERCPU_OFFSETS);
+	if (words != nr_cpu_ids) {
 		ret = -EINVAL;
-		goto out;
-	}
-	len /= sizeof(**cpu_offsets);
-	if (len != num_possible_cpus()) {
-		dev_err(dev, "Invalid percpu offsets table len=%d\n", len);
-		ret = -EINVAL;
-		goto out;
+		goto put_table;
 	}
 
-	*cpu_offsets = devm_kzalloc(dev, len * sizeof(**cpu_offsets),
-								GFP_KERNEL);
-	if (!*cpu_offsets) {
+	data->l3_percpu_offsets = devm_kcalloc(dev, words, sizeof(u32), GFP_KERNEL);
+	if (!data->l3_percpu_offsets) {
 		ret = -ENOMEM;
-		goto out;
+		goto put_table;
 	}
 
-	ret = of_property_read_u32_array(of_node, PERCPU_OFFSETS, *cpu_offsets,
-									len);
-	if (ret < 0) {
-		dev_err(dev, "Error reading percpu offsets from DT: %d\n", ret);
-		goto out;
+	ret = of_property_read_u32_array(np, PERCPU_OFFSETS,
+					 data->l3_percpu_offsets, words);
+	if (ret)
+		goto put_table;
+
+	for_each_possible_cpu(cpu) {
+		if (!epss_valid_offset(data, data->l3_percpu_offsets[cpu])) {
+			ret = -EINVAL;
+			break;
+		}
 	}
 
-out:
-	if (of_node != dev->of_node)
-		of_node_put(of_node);
+put_table:
+	of_node_put(table);
 	return ret;
 }
 
-static int setup_epss_l3_device(struct device *dev, struct dcvs_hw *hw,
-					struct dcvs_path *path, bool shared)
+static int setup_epss_l3_device(struct device *dev, struct dcvs_path *path,
+				bool shared)
 {
-	int ret = 0;
+	struct device_node *parent = dev->parent->of_node;
+	struct epss_dev_data *data;
+	struct resource res;
+	int idx, ret;
 
-	mutex_lock(&epss_lock);
-	if (!epss_data)
-		ret = init_epss_data(dev);
-	mutex_unlock(&epss_lock);
+	idx = of_property_match_string(parent, "reg-names", "l3-base");
+	if (idx < 0)
+		return dev_err_probe(dev, idx, "missing L3 vote registers\n");
 
-	if (ret < 0)
-		return ret;
+	ret = of_address_to_resource(parent, idx, &res);
+	if (ret)
+		return dev_err_probe(dev, ret, "invalid L3 vote resource\n");
+
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->l3_size = resource_size(&res);
+	if (data->l3_size < sizeof(u32))
+		return -EINVAL;
 
 	if (shared) {
-		ret = populate_shared_offset(dev, &epss_data->l3_shared_offset);
-		path->commit_dcvs_freqs = commit_epss_l3_shared;
+		ret = of_property_read_u32(dev->of_node, "qcom,shared-offset",
+					   &data->l3_shared_offset);
+		if (!ret && !epss_valid_offset(data, data->l3_shared_offset))
+			ret = -EINVAL;
 	} else {
-		ret = populate_percpu_offsets(dev, &epss_data->l3_percpu_offsets);
-		path->commit_dcvs_freqs = commit_epss_l3_percpu;
+		ret = populate_percpu_offsets(dev, data);
 	}
-	if (ret < 0)
-		return ret;
+	if (ret)
+		return dev_err_probe(dev, ret, "invalid L3 vote offsets\n");
 
-	path->data = epss_data;
+	/* The CPU performance controller also maps this shared window. */
+	data->l3_base = devm_ioremap(dev, res.start, data->l3_size);
+	if (!data->l3_base)
+		return -ENOMEM;
 
-	return ret;
+	path->data = data;
+	path->commit_dcvs_freqs = shared ? commit_epss_l3_shared :
+					   commit_epss_l3_percpu;
+	return 0;
 }
 
 int setup_epss_l3_sp_device(struct device *dev, struct dcvs_hw *hw,
 					struct dcvs_path *path)
 {
-	return setup_epss_l3_device(dev, hw, path, true);
+	return setup_epss_l3_device(dev, path, true);
 }
 
 int setup_epss_l3_percpu_device(struct device *dev, struct dcvs_hw *hw,
 					struct dcvs_path *path)
 {
-	return setup_epss_l3_device(dev, hw, path, false);
+	return setup_epss_l3_device(dev, path, false);
 }

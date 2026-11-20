@@ -78,20 +78,19 @@ static void record_irq_count(void)
 struct irq_info {
 	int irq;
 	unsigned int count;
-	struct irq_desc *desc;
 };
 
-static void compute_irq_count(void)
+static void compute_irq_count(struct msm_watchdog_data *wdog_dd)
 {
 	int i, irq, ipi_nr;
 	unsigned int count, diff;
 	struct irq_desc *desc;
 	unsigned long time_diff;
-	struct irq_info irq_info_list[NR_TOP_HITTERS];
+	struct irq_info irq_info_list[NR_TOP_HITTERS] = {};
 	unsigned int list_min_cnt = 0, list_min_pos = 0;
 
 	ipi_nr = nr_ipi_get();
-	time_diff = (sched_clock() - wdog_data->last_pet) / 1000000;
+	time_diff = (sched_clock() - wdog_dd->last_pet) / 1000000;
 
 	rcu_read_lock();
 	for_each_irq_nr(irq) {
@@ -108,7 +107,6 @@ static void compute_irq_count(void)
 		if (diff > list_min_cnt) {
 			irq_info_list[list_min_pos].count = diff;
 			irq_info_list[list_min_pos].irq = irq;
-			irq_info_list[list_min_pos].desc = desc;
 
 			list_min_pos = 0;
 			list_min_cnt = irq_info_list[0].count;
@@ -125,21 +123,13 @@ static void compute_irq_count(void)
 	pr_emerg("Top irqs in last %lu ms:\n", time_diff);
 	for (i = 0; i < NR_TOP_HITTERS; i++) {
 		count = irq_info_list[i].count;
-		if (count != 0) {
-			irq = irq_info_list[i].irq;
-			desc = irq_info_list[i].desc;
-			pr_emerg("IRQ %d [%s:%s] - %d times\n", irq,
-				(desc->irq_data.chip) ?
-				desc->irq_data.chip->name : "UNKNOWN",
-				(desc->action) ?
-				desc->action->name : "NONAME",
-				count);
-		}
+		if (count)
+			pr_emerg("IRQ %d - %d times\n", irq_info_list[i].irq, count);
 	}
 }
 #else
 static void record_irq_count(void) { }
-static void compute_irq_count(void) { }
+static void compute_irq_count(struct msm_watchdog_data *wdog_dd) { }
 #endif
 
 static int qcom_wdt_hibernation_notifier(struct notifier_block *nb,
@@ -174,7 +164,7 @@ int qcom_wdt_pet_suspend(struct device *dev)
 	struct msm_watchdog_data *wdog_data =
 			(struct msm_watchdog_data *)dev_get_drvdata(dev);
 
-	if (!wdog_data)
+	if (!wdog_data || READ_ONCE(wdog_data->permanently_disabled))
 		return 0;
 
 	if (wdog_data->user_pet_enabled)
@@ -218,7 +208,7 @@ int qcom_wdt_pet_resume(struct device *dev)
 			(struct msm_watchdog_data *)dev_get_drvdata(dev);
 	unsigned long delay_time = 0;
 
-	if (!wdog_data)
+	if (!wdog_data || READ_ONCE(wdog_data->permanently_disabled))
 		return 0;
 
 	val = BIT(EN);
@@ -315,6 +305,7 @@ static void qcom_wdt_unregister_die_notifier(struct msm_watchdog_data *wdog_dd) 
 
 static void qcom_wdt_disable(struct msm_watchdog_data *wdog_dd)
 {
+	WRITE_ONCE(wdog_dd->permanently_disabled, true);
 	wdog_dd->ops->disable_wdt(wdog_dd);
 
 	if (wdog_dd->irq_ppi) {
@@ -331,9 +322,9 @@ static void qcom_wdt_disable(struct msm_watchdog_data *wdog_dd)
 						&wdog_dd->panic_blk);
 	qcom_wdt_unregister_die_notifier(wdog_dd);
 	unregister_restart_handler(&wdog_dd->restart_blk);
-	timer_delete_sync(&wdog_dd->pet_timer);
+	timer_shutdown_sync(&wdog_dd->pet_timer);
 	if (wdog_dd->user_pet_enabled)
-		timer_delete_sync(&wdog_dd->user_pet_timer);
+		timer_shutdown_sync(&wdog_dd->user_pet_timer);
 	wdog_dd->ops->disable_wdt(wdog_dd);
 	dev_err(wdog_dd->dev, "QCOM Apps Watchdog deactivated\n");
 }
@@ -566,8 +557,11 @@ static __ref int qcom_wdt_kthread(void *arg)
 	while (!kthread_should_stop()) {
 		do {
 			ret = wait_event_interruptible(wdog_dd->pet_complete,
-						wdog_dd->timer_expired);
+						wdog_dd->timer_expired ||
+						kthread_should_stop());
 		} while (ret != 0);
+		if (kthread_should_stop())
+			break;
 
 		wdog_dd->thread_start = sched_clock();
 		for_each_cpu(cpu, cpu_present_mask)
@@ -578,8 +572,11 @@ static __ref int qcom_wdt_kthread(void *arg)
 
 		do {
 			ret = wait_event_interruptible(wdog_dd->pet_complete,
-						wdog_dd->user_pet_complete);
+						wdog_dd->user_pet_complete ||
+						kthread_should_stop());
 		} while (ret != 0);
+		if (kthread_should_stop())
+			break;
 
 		wdog_dd->timer_expired = false;
 		wdog_dd->user_pet_complete = !wdog_dd->user_pet_enabled;
@@ -594,7 +591,7 @@ static __ref int qcom_wdt_kthread(void *arg)
 		 */
 		if (!kthread_should_stop()) {
 			spin_lock(&wdog_dd->freeze_lock);
-			if (!wdog_dd->freeze_in_progress)
+			if (wdog_dd->enabled && !wdog_dd->freeze_in_progress)
 				mod_timer(&wdog_dd->pet_timer,
 					jiffies + delay_time);
 			spin_unlock(&wdog_dd->freeze_lock);
@@ -627,6 +624,16 @@ static int qcom_wdt_cpu_pm_notify(struct notifier_block *this,
 	return NOTIFY_OK;
 }
 
+static struct md_region qcom_wdt_minidump_region(struct msm_watchdog_data *wdog_dd)
+{
+	return (struct md_region) {
+		.name = "KWDOGDATA",
+		.virt_addr = (uintptr_t)wdog_dd,
+		.phys_addr = virt_to_phys(wdog_dd),
+		.size = sizeof(*wdog_dd),
+	};
+}
+
 /**
  * qcom_wdt_remove() - Removes the watchdog and stops it's kthread.
  *
@@ -649,9 +656,14 @@ void qcom_wdt_remove(struct platform_device *pdev)
 
 	mutex_unlock(&wdog_dd->disable_lock);
 	device_remove_file(wdog_dd->dev, &dev_attr_disable);
+	device_remove_file(wdog_dd->dev, &dev_attr_wakeup_enable);
+	if (QCOM_WATCHDOG_USERSPACE_PET) {
+		device_remove_file(wdog_dd->dev, &dev_attr_pet_time);
+		device_remove_file(wdog_dd->dev, &dev_attr_user_pet_enabled);
+	}
+	unregister_pm_notifier(&qcom_wdt_notif_block);
 	if (wdog_dd->irq_ppi)
 		free_percpu((void __percpu *)wdog_dd->wdog_cpu_dd);
-	irq_dispose_mapping(wdog_dd->bark_irq);
 	dev_info(wdog_dd->dev, "QCOM Apps Watchdog Exit - Deactivated\n");
 	timer_delete_sync(&wdog_dd->pet_timer);
 	if (wdog_dd->user_pet_enabled)
@@ -659,6 +671,13 @@ void qcom_wdt_remove(struct platform_device *pdev)
 	wdog_dd->timer_expired = true;
 	wdog_dd->user_pet_complete = true;
 	kthread_stop(wdog_dd->watchdog_task);
+	if (wdog_dd->minidump_registered) {
+		struct md_region entry = qcom_wdt_minidump_region(wdog_dd);
+
+		msm_minidump_remove_region(&entry);
+	}
+	WRITE_ONCE(wdog_data, NULL);
+	synchronize_rcu();
 }
 EXPORT_SYMBOL(qcom_wdt_remove);
 
@@ -669,15 +688,22 @@ EXPORT_SYMBOL(qcom_wdt_remove);
  */
 void qcom_wdt_trigger_bite(void)
 {
-	if (!wdog_data)
+	struct msm_watchdog_data *wdog_dd;
+
+	rcu_read_lock();
+	wdog_dd = READ_ONCE(wdog_data);
+	if (!wdog_dd || !READ_ONCE(wdog_dd->enabled)) {
+		rcu_read_unlock();
 		return;
+	}
 
 	qcom_sdei_shared_reset();
-	compute_irq_count();
-	dev_err(wdog_data->dev, "Causing a QCOM Apps Watchdog bite!\n");
-	wdog_data->ops->show_wdt_status(wdog_data);
-	wdog_data->ops->set_bite_time(1, wdog_data);
-	wdog_data->ops->reset_wdt(wdog_data);
+	compute_irq_count(wdog_dd);
+	dev_err(wdog_dd->dev, "Causing a QCOM Apps Watchdog bite!\n");
+	wdog_dd->ops->show_wdt_status(wdog_dd);
+	wdog_dd->ops->set_bite_time(1, wdog_dd);
+	wdog_dd->ops->reset_wdt(wdog_dd);
+	rcu_read_unlock();
 	/* Delay to make sure bite occurs */
 	mdelay(10000);
 	/*
@@ -775,19 +801,15 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 		}
 	} else {
 		ret = devm_request_irq(wdog_dd->dev, wdog_dd->bark_irq,
-				qcom_wdt_bark_handler,
-				IRQF_TRIGGER_RISING | IRQF_NO_SUSPEND,
+				qcom_wdt_bark_handler, IRQF_NO_SUSPEND,
 				"apps_wdog_bark", wdog_dd);
-		if (ret) {
-			dev_err(wdog_dd->dev, "failed to request bark irq: %d\n", ret);
-			return -EINVAL;
-		}
+		if (ret)
+			return dev_err_probe(wdog_dd->dev, ret, "could not request bark IRQ\n");
 	}
 
-	wdog_data->hibernate = false;
 	ret = register_pm_notifier(&qcom_wdt_notif_block);
 	if (ret)
-		return ret;
+		goto free_percpu_irq;
 
 	delay_time = msecs_to_jiffies(wdog_dd->pet_time);
 	wdog_dd->ops->set_bark_time(wdog_dd->bark_time, wdog_dd);
@@ -807,10 +829,7 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 	wdog_dd->user_pet_enabled = false;
 	spin_lock_init(&wdog_dd->freeze_lock);
 	wdog_dd->freeze_in_progress = false;
-	wake_up_process(wdog_dd->watchdog_task);
 	timer_setup(&wdog_dd->pet_timer, qcom_wdt_pet_task_wakeup, 0);
-	wdog_dd->pet_timer.expires = jiffies + delay_time;
-	add_timer(&wdog_dd->pet_timer);
 	timer_setup(&wdog_dd->user_pet_timer, qcom_wdt_user_pet_bite, 0);
 	val = BIT(EN);
 	if (wdog_dd->wakeup_irq_enable)
@@ -823,20 +842,15 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 		qcom_wdt_unregister_die_notifier(wdog_dd);
 		unregister_restart_handler(&wdog_dd->restart_blk);
 
-		if (wdog_dd->irq_ppi) {
-			free_percpu_irq(wdog_dd->bark_irq,
-					(void __percpu *)wdog_dd->wdog_cpu_dd);
-			free_percpu((void __percpu *)wdog_dd->wdog_cpu_dd);
-		}
-
-		timer_delete_sync(&wdog_dd->pet_timer);
-		dev_err(wdog_dd->dev, "Failed Initializing QCOM Apps Watchdog\n");
-		return ret;
+		unregister_pm_notifier(&qcom_wdt_notif_block);
+		goto free_percpu_irq;
 	}
 
 	wdog_dd->ops->reset_wdt(wdog_dd);
 	wdog_dd->last_pet = sched_clock();
 	wdog_dd->enabled = true;
+	mod_timer(&wdog_dd->pet_timer, jiffies + delay_time);
+	wake_up_process(wdog_dd->watchdog_task);
 
 	qcom_wdt_init_sysfs(wdog_dd);
 
@@ -849,6 +863,13 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 	dev_info(wdog_dd->dev, "QCOM Apps Watchdog Initialized\n");
 
 	return 0;
+
+free_percpu_irq:
+	if (wdog_dd->irq_ppi) {
+		free_percpu_irq(wdog_dd->bark_irq, wdog_dd->wdog_cpu_dd);
+		free_percpu(wdog_dd->wdog_cpu_dd);
+	}
+	return ret;
 }
 
 static void qcom_wdt_dump_pdata(struct msm_watchdog_data *pdata)
@@ -860,16 +881,23 @@ static void qcom_wdt_dump_pdata(struct msm_watchdog_data *pdata)
 								pdata->base);
 }
 
-static void qcom_wdt_dt_to_pdata(struct platform_device *pdev,
+static int qcom_wdt_dt_to_pdata(struct platform_device *pdev,
 				struct msm_watchdog_data *pdata)
 {
-	pdata->bark_irq = platform_get_irq(pdev, 0);
+	int irq;
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
+
+	pdata->bark_irq = irq;
 	pdata->irq_ppi = irq_is_percpu(pdata->bark_irq);
 	pdata->bark_time = QCOM_WATCHDOG_BARK_TIME;
 	pdata->pet_time = QCOM_WATCHDOG_PET_TIME;
 	pdata->do_ipi_ping = QCOM_WATCHDOG_IPI_PING;
 	pdata->wakeup_irq_enable = QCOM_WATCHDOG_WAKEUP_ENABLE;
 	qcom_wdt_dump_pdata(pdata);
+	return 0;
 }
 
 /**
@@ -895,9 +923,13 @@ int qcom_wdt_register(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
-	qcom_wdt_dt_to_pdata(pdev, wdog_dd);
-	wdog_data = wdog_dd;
 	wdog_dd->dev = &pdev->dev;
+	ret = qcom_wdt_dt_to_pdata(pdev, wdog_dd);
+	if (ret)
+		return ret;
+
+	if (cmpxchg(&wdog_data, NULL, wdog_dd))
+		return -EBUSY;
 	platform_set_drvdata(pdev, wdog_dd);
 	cpumask_clear(&wdog_dd->alive_mask);
 	wdog_dd->watchdog_task = kthread_create(qcom_wdt_kthread, wdog_dd,
@@ -912,16 +944,18 @@ int qcom_wdt_register(struct platform_device *pdev,
 		goto err;
 	}
 
-	/* Add wdog info to minidump table */
-	strscpy(md_entry.name, "KWDOGDATA", sizeof(md_entry.name));
-	md_entry.virt_addr = (uintptr_t)wdog_dd;
-	md_entry.phys_addr = virt_to_phys(wdog_dd);
-	md_entry.size = sizeof(*wdog_dd);
-	if (msm_minidump_add_region(&md_entry) < 0)
+	md_entry = qcom_wdt_minidump_region(wdog_dd);
+	ret = msm_minidump_add_region(&md_entry);
+	if (ret < 0)
 		dev_err(wdog_dd->dev, "Failed to add Wdt data in Minidump\n");
+	else
+		wdog_dd->minidump_registered = true;
 
 	return 0;
 err:
+	platform_set_drvdata(pdev, NULL);
+	WRITE_ONCE(wdog_data, NULL);
+	synchronize_rcu();
 	return ret;
 }
 EXPORT_SYMBOL(qcom_wdt_register);

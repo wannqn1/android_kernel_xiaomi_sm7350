@@ -1190,16 +1190,19 @@ static void memlat_update_work(struct work_struct *work)
 		}
 		if (memlat_grp->sampling_cur_freq == max_freqs[grp])
 			continue;
-		memlat_grp->sampling_cur_freq = max_freqs[grp];
-		if (memlat_grp->fp_voting_enabled)
+		if (memlat_grp->fp_voting_enabled) {
+			memlat_grp->sampling_cur_freq = max_freqs[grp];
 			continue;
+		}
 		new_freq.ib = max_freqs[grp];
 		new_freq.ab = 0;
 		new_freq.hw_type = grp;
 		ret = qcom_dcvs_update_votes(dev_name(memlat_grp->dev),
 				&new_freq, 1, memlat_grp->sampling_path_type);
 		if (ret < 0)
-			dev_err(memlat_grp->dev, "qcom dcvs err: %d\n", ret);
+			dev_err_ratelimited(memlat_grp->dev, "DCVS vote failed: %d\n", ret);
+		else
+			memlat_grp->sampling_cur_freq = max_freqs[grp];
 	}
 }
 

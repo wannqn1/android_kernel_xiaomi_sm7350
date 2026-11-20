@@ -118,6 +118,8 @@ struct msm_watchdog_data {
 	struct notifier_block restart_blk;
 
 	bool enabled;
+	bool permanently_disabled;
+	bool minidump_registered;
 	bool user_pet_enabled;
 
 	struct task_struct *watchdog_task;
