@@ -44,7 +44,7 @@ fi
 for step in "$@"; do
     case "$step" in
         kernel)
-            kmake -s gki_defconfig vendor/redwood.config vendor/renoir.config >"$work/logs/config.log" 2>&1
+            kmake -s gki_defconfig vendor/renoir.config >"$work/logs/config.log" 2>&1
             for option in CONFIG_RUST=y CONFIG_ASHMEM=y CONFIG_IOMMU_IO_PGTABLE_FAST=y \
                 CONFIG_PINCTRL_SHIMA=m CONFIG_INTERCONNECT_QCOM_SHIMA=m CONFIG_SM_GCC_7350=m \
                 CONFIG_PCI_MSM=m CONFIG_MHI_BUS=m; do
