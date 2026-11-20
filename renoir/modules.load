@@ -50,6 +50,9 @@ rtc-pm8xxx.ko
 sg.ko
 dcvs_fp.ko
 qcom-dcvs.ko
+qcom_wdt_core.ko
+qcom_soc_wdt.ko
+epss-l3.ko
 qcom-pmu-lib.ko
 qcom_scmi_client.ko
 mem_buf_dev.ko
@@ -233,6 +236,7 @@ rust_binder.ko
 btqca.ko
 btbcm.ko
 adsp_loader_dlkm.ko
+mmhardware.ko
 apr_dlkm.ko
 bolero_cdc_dlkm.ko
 bt_fm_slim.ko

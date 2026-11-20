@@ -6,6 +6,7 @@
  */
 
 #include <soc/qcom/watchdog.h>
+#include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/mod_devicetable.h>
@@ -109,12 +110,10 @@ static int qcom_soc_wdt_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENODEV;
 
-	wdog_dd->base  = devm_ioremap_resource(&pdev->dev, res);
-	if (!wdog_dd->base) {
-		dev_err(&pdev->dev, "%s cannot map wdog register space\n",
-				__func__);
-		return -ENXIO;
-	}
+	wdog_dd->base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(wdog_dd->base))
+		return dev_err_probe(&pdev->dev, PTR_ERR(wdog_dd->base),
+				     "cannot map watchdog register space\n");
 
 	of_property_read_u32(np, "qcom,wdt-en-offset", &wdt_map.wdt0_en);
 	of_property_read_u32(np, "qcom,wdt-rst-offset", &wdt_map.wdt0_rst);
@@ -142,6 +141,8 @@ static const struct of_device_id qcom_soc_match_table[] = {
 	{ .compatible = "qcom,msm-watchdog" },
 	{}
 };
+
+MODULE_DEVICE_TABLE(of, qcom_soc_match_table);
 
 static struct platform_driver qcom_soc_wdt_driver = {
 	.probe = qcom_soc_wdt_probe,
