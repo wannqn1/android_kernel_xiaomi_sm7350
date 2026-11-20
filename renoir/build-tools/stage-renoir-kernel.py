@@ -23,8 +23,8 @@ def main():
     dt = work / "dt"
     destination = root / "device/xiaomi/renoir-kernel-6.18"
     release = (out / "include/config/kernel.release").read_text().strip()
-    if not release.startswith("6.18.") or "-renoir" not in release:
-        raise SystemExit(f"Expected a renoir 6.18 build, got {release}")
+    if not release.startswith("6.18.") or not release.endswith("-Tempest"):
+        raise SystemExit(f"Expected a 6.18 Tempest build, got {release}")
     modules = index_modules(out)
     modules.update(index_modules(work / "vb"))
     names = (kernel / "renoir/modules.load").read_text().splitlines()

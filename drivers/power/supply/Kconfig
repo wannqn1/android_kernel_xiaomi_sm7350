@@ -1112,6 +1112,13 @@ config QTI_BATTERY_CHARGER
 	  To compile the driver as a module, choose M here: the module will be
 	  called qti_battery_charger.
 
+config QTI_BATTERY_CHARGER_RENOIR
+	bool "Xiaomi Renoir charger firmware protocol"
+	depends on ARCH_SHIMA && QTI_BATTERY_CHARGER
+	help
+	  Use the Xiaomi Mi 11 Lite 5G (renoir) property IDs when
+	  communicating with the stock PMIC GLINK charger firmware.
+
 config QTI_CHARGER_NFC_VREG
 	bool "Allow client to vote on Charger reverse boost regulator"
 	depends on QTI_BATTERY_CHARGER
