@@ -21,16 +21,46 @@ def index_modules(path):
 def stage_uapi_headers(root, out, stage):
     kernel = root / "redwood-6.18-kernel"
     modules = root / "redwood-6.18-modules"
-    installed = stage / "usr"
+    installed = stage / "usr/include"
     subprocess.run(
         [
             "make", "-s", "-C", kernel, f"O={out.resolve()}",
-            "ARCH=arm64", "LLVM=1", f"INSTALL_HDR_PATH={installed.resolve()}",
-            "headers_install",
+            "ARCH=arm64", "LLVM=1", "scripts_unifdef",
         ],
         check=True,
     )
 
+    # Keep Bionic's generic Linux and architecture headers in charge of
+    # the Android userspace ABI. Export only the Qualcomm additions.
+    kernel_headers = (
+        "linux/dhms_ioctl.h",
+        "linux/eom_ioctl.h",
+        "linux/esoc_ctrl.h",
+        "linux/gh_virtio_backend.h",
+        "linux/gunyah_deprecated.h",
+        "linux/hab_ioctl.h",
+        "linux/habmmid.h",
+        "linux/ion.h",
+        "linux/mem-buf.h",
+        "linux/msm_geni_serial.h",
+        "linux/msm_ion.h",
+        "linux/msm_ion_ids.h",
+        "linux/msm_rmnet.h",
+        "linux/msm_sysstats.h",
+        "linux/power_state.h",
+        "linux/q2spi/q2spi.h",
+        "linux/qbg-profile.h",
+        "linux/qbg.h",
+        "linux/qg-profile.h",
+        "linux/qg.h",
+        "linux/qrtr.h",
+        "linux/qti_virtio_mem.h",
+        "linux/slatecom_interface.h",
+        "linux/usb/usb_ctrl_qti.h",
+        "misc/adsp_sleepmon.h",
+        "misc/fastrpc.h",
+        "misc/sysmon_subsystem_stats_ioctl.h",
+    )
     vendor_roots = (
         "audio-kernel/include/uapi",
         "camera-kernel/include/uapi",
@@ -43,23 +73,22 @@ def stage_uapi_headers(root, out, stage):
         "securemsm-kernel/smmu-proxy/include/uapi",
     )
     sanitizer_env = dict(os.environ, objtree=str(out.resolve()))
+    sources = [(kernel / "include/uapi", kernel_headers)]
     for relative in vendor_roots:
         source = modules / relative
-        headers = sorted(source.rglob("*.h"))
+        headers = tuple(p.relative_to(source) for p in sorted(source.rglob("*.h")))
         if not headers:
             raise SystemExit(f"No UAPI headers found in {source}")
-        for header in headers:
-            destination = installed / "include" / header.relative_to(source)
+        sources.append((source, headers))
+    for source, headers in sources:
+        for relative in headers:
+            destination = installed / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(
-                [kernel / "scripts/headers_install.sh", header, destination],
+                [kernel / "scripts/headers_install.sh", source / relative, destination],
                 env=sanitizer_env,
                 check=True,
             )
-
-    # Bionic supplies compatibility versions of these headers.
-    for header in ("asm/signal.h", "asm-generic/signal.h", "linux/eventpoll.h"):
-        (installed / "include" / header).unlink()
 
     archive = stage / "kernel-uapi-headers.tar.gz"
     subprocess.run(
@@ -81,7 +110,7 @@ def write_uapi_blueprint(archive, output):
         '    name: "renoir_kernel_uapi",',
         '    srcs: ["include/kernel-uapi-headers.tar.gz"],',
         '    cmd: "gzip -d < $(in) > $(genDir)/headers.tar && tar -xf $(genDir)/headers.tar -C $(genDir) && rm -f $(genDir)/headers.tar",',
-        '    export_include_dirs: ["usr/include"],',
+        '    export_include_dirs: ["usr/include", "usr/include/camera"],',
         "    out: [",
     ]
     lines.extend(f'        "{path}",' for path in paths)
