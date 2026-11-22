@@ -80,7 +80,7 @@ def write_uapi_blueprint(archive, output):
         "genrule {",
         '    name: "renoir_kernel_uapi",',
         '    srcs: ["include/kernel-uapi-headers.tar.gz"],',
-        '    cmd: "tar -xzf $(in) -C $(genDir)",',
+        '    cmd: "gzip -d < $(in) > $(genDir)/headers.tar && tar -xf $(genDir)/headers.tar -C $(genDir) && rm -f $(genDir)/headers.tar",',
         '    export_include_dirs: ["usr/include"],',
         "    out: [",
     ]
