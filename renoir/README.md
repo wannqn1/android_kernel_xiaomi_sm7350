@@ -29,3 +29,7 @@ JOBS=8 redwood-6.18-kernel/renoir/build-tools/build-renoir-kernel.sh kernel dt m
 The output goes into `device/xiaomi/renoir-kernel-6.18` under this workspace.
 Replace the contents of that path in the Android checkout with the matched
 Image, DTB, DTBO, vendor ramdisk modules, and UAPI header archive.
+
+The UAPI archive includes the [Renoir downstream RMNET header](https://github.com/Failedmush1/android_kernel_qcom_sm8350/blob/9d60f57e2f7868681dbb3477bfa064a0cfef4ed6/include/uapi/linux/rmnet_data.h)
+so Android can build the legacy librmnetctl entry points used by the vendor
+binaries. The header is exported for Android userspace builds only.

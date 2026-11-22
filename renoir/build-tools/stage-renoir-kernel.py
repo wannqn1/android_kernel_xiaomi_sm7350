@@ -73,7 +73,10 @@ def stage_uapi_headers(root, out, stage):
         "securemsm-kernel/smmu-proxy/include/uapi",
     )
     sanitizer_env = dict(os.environ, objtree=str(out.resolve()))
-    sources = [(kernel / "include/uapi", kernel_headers)]
+    sources = [
+        (kernel / "include/uapi", kernel_headers),
+        (kernel / "renoir/uapi", ("linux/rmnet_data.h",)),
+    ]
     for relative in vendor_roots:
         source = modules / relative
         headers = tuple(p.relative_to(source) for p in sorted(source.rglob("*.h")))
