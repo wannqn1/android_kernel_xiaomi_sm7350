@@ -2,6 +2,7 @@
 """Stage matched 6.18 kernel and DT artifacts for LineageOS."""
 
 import collections
+import os
 import pathlib
 import shutil
 import subprocess
@@ -14,6 +15,56 @@ def index_modules(path):
     for module in sorted(path.rglob("*.ko")):
         modules[module.name].append(module)
     return modules
+
+
+def stage_uapi_headers(root, out, stage):
+    kernel = root / "redwood-6.18-kernel"
+    modules = root / "redwood-6.18-modules"
+    installed = stage / "usr"
+    subprocess.run(
+        [
+            "make", "-s", "-C", kernel, f"O={out.resolve()}",
+            "ARCH=arm64", "LLVM=1", f"INSTALL_HDR_PATH={installed.resolve()}",
+            "headers_install",
+        ],
+        check=True,
+    )
+
+    vendor_roots = (
+        "audio-kernel/include/uapi",
+        "camera-kernel/include/uapi",
+        "dataipa/drivers/platform/msm/include/uapi",
+        "display-drivers/include/uapi",
+        "graphics-kernel/include/uapi",
+        "mm-drivers/sync_fence/include/uapi",
+        "nfc-driver/include/uapi",
+        "securemsm-kernel/include/uapi",
+        "securemsm-kernel/smmu-proxy/include/uapi",
+    )
+    sanitizer_env = dict(os.environ, objtree=str(out.resolve()))
+    for relative in vendor_roots:
+        source = modules / relative
+        headers = sorted(source.rglob("*.h"))
+        if not headers:
+            raise SystemExit(f"No UAPI headers found in {source}")
+        for header in headers:
+            destination = installed / "include" / header.relative_to(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [kernel / "scripts/headers_install.sh", header, destination],
+                env=sanitizer_env,
+                check=True,
+            )
+
+    archive = stage / "kernel-uapi-headers.tar.gz"
+    subprocess.run(
+        [
+            "tar", "--sort=name", "--mtime=@0", "--owner=0", "--group=0",
+            "--numeric-owner", "-czf", archive, "-C", stage, "usr",
+        ],
+        check=True,
+    )
+    return archive
 
 
 def main():
@@ -83,7 +134,11 @@ def main():
         if indexed != set(names):
             raise SystemExit("depmod did not index the complete module set")
 
+        headers = stage_uapi_headers(root, out, stage)
         destination.mkdir(exist_ok=True)
+        headers_dir = destination / "headers/include"
+        headers_dir.mkdir(parents=True, exist_ok=True)
+        headers.replace(headers_dir / headers.name)
         for name in ["dtb", "vendor_ramdisk"]:
             previous = destination / name
             if previous.is_dir():

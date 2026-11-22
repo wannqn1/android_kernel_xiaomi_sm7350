@@ -28,4 +28,4 @@ JOBS=8 redwood-6.18-kernel/renoir/build-tools/build-renoir-kernel.sh kernel dt m
 
 The output goes into `device/xiaomi/renoir-kernel-6.18` under this workspace.
 Replace the contents of that path in the Android checkout with the matched
-Image, DTB, DTBO, and vendor ramdisk modules.
+Image, DTB, DTBO, vendor ramdisk modules, and UAPI header archive.
